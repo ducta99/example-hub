@@ -274,10 +274,116 @@ export async function swapUSDTForBNB(
  */
 export async function executeUSDTToBNBSwap(
   walletAddress: string,
+  tradeAmount: number,
   bnbPrice: number
 ) {
-  const amountIn = parseEther("10"); // 10 USDT
+  const amountIn = parseEther(tradeAmount.toString()); // e.g., 10 USDT
   return await swapUSDTForBNB(
+    walletAddress as `0x${string}`,
+    amountIn,
+    bnbPrice
+  );
+}
+
+/**
+ * Swap BNB for USDT using PancakeSwap Universal Router
+ * @param walletAddress User's wallet address
+ * @param amountIn Amount of BNB to swap (in wei)
+ * @param bnbPrice Current BNB price in USD
+ * @returns Transaction receipt
+ */
+export async function swapBNBForUSDT(
+  walletAddress: `0x${string}`,
+  amountIn: bigint,
+  bnbPrice: number
+) {
+  console.log("🚀 Starting BNB to USDT swap...");
+  console.log(`💰 Amount: ${formatEther(amountIn)} BNB`);
+  console.log(`📊 BNB Price: $${bnbPrice}`);
+
+  const { publicClient, userClient } = createViemClients();
+
+  try {
+    // Universal router commands: WRAP_ETH (0x0b) + V3_SWAP_EXACT_IN (0x00)
+    const commands = "0x0b00";
+
+    const deadline = Math.floor(Date.now() / 1000) + 60; // 1 minute from now
+
+    // Prepare wrap input
+    const wrapInput = encodeAbiParameters(
+      [
+        { name: "recipient", type: "address" },
+        { name: "amountMin", type: "uint256" },
+      ],
+      [UNIVERSAL_ROUTER_ADDRESS as `0x${string}`, amountIn]
+    );
+
+    // Prepare swap input
+    const fee = 100; // 0.01% fee tier
+    const path = ("0x" +
+      WBNB_TOKEN_ADDRESS.slice(2).padStart(40, "0") +
+      fee.toString(16).padStart(6, "0") +
+      USDT_TOKEN_ADDRESS.slice(2).padStart(40, "0")) as `0x${string}`;
+
+    // Calculate minimum USDT output (with 5% slippage)
+    const amountOutMin = parseEther(
+      (Number(formatEther(amountIn)) * bnbPrice * 0.95).toString()
+    );
+
+    const swapInput = encodeAbiParameters(
+      [
+        { name: "recipient", type: "address" },
+        { name: "amountIn", type: "uint256" },
+        { name: "amountOutMin", type: "uint256" },
+        { name: "path", type: "bytes" },
+        { name: "payerIsUser", type: "bool" },
+      ],
+      [
+        walletAddress, // Send USDT directly to user wallet
+        amountIn,
+        amountOutMin,
+        path,
+        false, // payerIsUser is false because funds come from wrapped BNB
+      ]
+    );
+
+    console.log("🔄 Executing swap via Universal Router...");
+    // Execute via universal router
+    const inputs = [wrapInput, swapInput];
+    const tx = await userClient.writeContract({
+      address: UNIVERSAL_ROUTER_ADDRESS as `0x${string}`,
+      abi: universalRouterAbi,
+      functionName: "execute",
+      args: [commands, inputs, deadline],
+      value: amountIn, // Send BNB with the transaction
+    });
+
+    console.log("⏳ Waiting for transaction confirmation...");
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: tx });
+
+    console.log("✅ Swap completed successfully!");
+    console.log(`📝 Transaction hash: ${receipt.transactionHash}`);
+
+    return receipt;
+  } catch (error) {
+    console.error("❌ Swap failed:", error);
+    throw error;
+  }
+}
+
+/**
+ * Execute BNB to USDT swap with 0.01 BNB
+ * @param walletAddress User's wallet address
+ * @param bnbPrice Current BNB price
+ * @returns Transaction receipt
+ */
+export async function executeBNBToUSDTSwap(
+  walletAddress: string,
+  tradeAmount: number,
+  bnbPrice: number
+) {
+  const amountIn = parseEther(tradeAmount.toString()); // e.g., 0.01 BNB
+  return await swapBNBForUSDT(
     walletAddress as `0x${string}`,
     amountIn,
     bnbPrice

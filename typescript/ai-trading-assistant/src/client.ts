@@ -43,7 +43,7 @@ export class MCPClient {
       {
         role: "system",
         content:
-          "You are a helpful AI assistant specialized in trading analysis and blockchain operations. You have access to tools for performing technical analysis on cryptocurrencies and blockchain operations. You can also execute trades with USDT balance checks. When users want to trade, use the executeTrade tool which will automatically check their USDT balance first. Maintain context from previous conversations and provide detailed, helpful responses. When users ask follow-up questions, reference previous analysis results when relevant.",
+          "You are a helpful AI assistant specialized in trading analysis and blockchain operations. You have access to tools for performing technical analysis on cryptocurrencies and blockchain operations. You can also execute trades with USDT balance checks. When users want to trade, use the executeTrade tool which will automatically check their USDT balance first.",
       },
     ];
   }
@@ -138,105 +138,203 @@ export class MCPClient {
     }
   }
 
+  // async processQuery(query: string) {
+  //   // Add the new user message to conversation history
+  //   this.conversationHistory.push({
+  //     role: "user",
+  //     content: query,
+  //   });
+
+  //   let finalText: string[] = [];
+  //   let maxIterations = 5;
+  //   let iteration = 0;
+
+  //   while (iteration < maxIterations) {
+  //     iteration++;
+
+  //     const response = await this.openai.chat.completions.create({
+  //       model,
+  //       max_tokens: 1000,
+  //       messages: this.conversationHistory,
+  //       tools: this.tools,
+  //     });
+
+  //     const choice = response.choices[0];
+
+  //     if (choice?.message) {
+  //       this.conversationHistory.push(choice.message);
+
+  //       if (choice.message.content) {
+  //         finalText.push(choice.message.content);
+  //       }
+  //     }
+
+  //     if (choice?.message?.tool_calls && choice.message.tool_calls.length > 0) {
+  //       for (const toolCall of choice.message.tool_calls) {
+  //         const toolName = toolCall.function.name;
+  //         const toolArgs = JSON.parse(toolCall.function.arguments);
+
+  //         let result;
+
+  //         // Check if this is a local tool
+  //         if (toolName === "performAnalysis") {
+  //           // Show waiting message for analysis
+  //           const chalk = (await import("chalk")).default;
+  //           console.log(
+  //             chalk.yellow(
+  //               "⏳ Fetching market data and generating analysis... Please wait."
+  //             )
+  //           );
+
+  //           result = await performAnalysis(toolArgs.token);
+  //           result = { content: result };
+  //         } else if (toolName === "getCurrentPrice") {
+  //           // Show waiting message for price fetch
+  //           const chalk = (await import("chalk")).default;
+  //           console.log(
+  //             chalk.yellow("📡 Fetching current price... Please wait.")
+  //           );
+
+  //           result = await getCurrentPrice(toolArgs.token);
+  //           result = { content: result };
+  //         } else if (toolName === "executeTrade") {
+  //           // Show waiting message for trade execution
+  //           const chalk = (await import("chalk")).default;
+  //           console.log(
+  //             chalk.yellow(
+  //               "🔍 Checking USDT balance and executing trade... Please wait."
+  //             )
+  //           );
+
+  //           result = await executeTrade(
+  //             this.mcp,
+  //             toolArgs.token,
+  //             toolArgs.amount
+  //           );
+  //           result = { content: result };
+  //         } else {
+  //           // Call server tool
+  //           result = await this.mcp.callTool({
+  //             name: toolName,
+  //             arguments: toolArgs,
+  //           });
+  //         }
+
+  //         finalText.push(
+  //           `[Calling tool ${toolName} with args ${JSON.stringify(toolArgs)}]`
+  //         );
+
+  //         this.conversationHistory.push({
+  //           role: "tool",
+  //           content: result.content as string,
+  //           tool_call_id: toolCall.id,
+  //         });
+  //       }
+  //     } else {
+  //       break;
+  //     }
+  //   }
+
+  //   return finalText.join("\n");
+  // }
+
+  private extractTokenFromQuery(query: string): string {
+    const match = query.match(/\b[A-Z]{2,5}\b/);
+    if (!match) throw new Error("Token not found in query.");
+    return match[0];
+  }
+
+  private extractDecision(text: string): "BUY" | "SELL" | "HOLD" {
+    const match = text.match(/Decision:\s*(BUY|SELL|HOLD)/i);
+    return match ? match[1].toUpperCase() as "BUY" | "SELL" | "HOLD" : "HOLD";
+  }
+
+  // Dummy sentiment aggregator (replace with real data source)
+  private async getSentimentSummary(token: string): Promise<string> {
+    // Later you could connect to Twitter API, CryptoPanic, or LunarCrush API
+    return `Sentiment data for ${token}: neutral (no major news impact).`;
+  }
+
+  // Decide how much to trade based on volatility or signal strength
+  private determineTradeAmount(analysis: any): number {
+    if (analysis.rsi < 30) return 100; // oversold → larger BUY
+    if (analysis.rsi > 70) return 50;  // overbought → smaller SELL
+    return 25; // default small trade
+  }
+
   async processQuery(query: string) {
-    // Add the new user message to conversation history
-    this.conversationHistory.push({
-      role: "user",
-      content: query,
-    });
+    const chalk = (await import("chalk")).default;
+    const finalText: string[] = [];
 
-    let finalText: string[] = [];
-    let maxIterations = 5;
-    let iteration = 0;
+    try {
+      // 1️⃣ Extract token from query
+      const token = this.extractTokenFromQuery(query);
+      finalText.push(`Detected token: ${token}`);
 
-    while (iteration < maxIterations) {
-      iteration++;
+      // 2️⃣ Get current price
+      console.log(chalk.yellow("📡 Fetching current price..."));
+      const price = await getCurrentPrice(token);
+      finalText.push(`Current price of ${token}: ${price}`);
 
-      const response = await this.openai.chat.completions.create({
+      // 3️⃣ Perform technical analysis (RSI, MACD, etc.)
+      console.log(chalk.yellow("📊 Performing technical analysis..."));
+      const techAnalysis = await performAnalysis(token);
+      finalText.push(`Technical indicators:\n${JSON.stringify(techAnalysis, null, 2)}`);
+
+      // 4️⃣ Ask LLM to interpret signals and add sentiment reasoning
+      console.log(chalk.blue("🧠 Evaluating technical + sentiment data via LLM..."));
+
+      const llmEval = await this.openai.chat.completions.create({
         model,
-        max_tokens: 1000,
-        messages: this.conversationHistory,
-        tools: this.tools,
+        max_tokens: 800,
+        messages: [
+          {
+            role: "system",
+            content: `You are a professional crypto trading assistant.
+  You will combine technical indicators and market sentiment to decide whether to BUY, SELL, or HOLD.
+  Explain your reasoning briefly and output the final decision in the format:
+  Decision: [BUY/SELL/HOLD].`,
+          },
+          {
+            role: "user",
+            content: `
+  Token: ${token}
+  Current Price: ${price}
+  Technical Signals: ${JSON.stringify(techAnalysis, null, 2)}
+  Market Sentiment (from news/social): ${await this.getSentimentSummary(token)}
+
+  Decide what action to take.
+            `,
+          },
+        ],
       });
 
-      const choice = response.choices[0];
+      const llmContent = llmEval.choices[0].message.content || "";
+      finalText.push(`LLM Evaluation:\n${llmContent}`);
 
-      if (choice?.message) {
-        this.conversationHistory.push(choice.message);
+      // 5️⃣ Extract the LLM’s decision
+      const decision = this.extractDecision(llmContent);
+      finalText.push(`Final Decision: ${decision}`);
 
-        if (choice.message.content) {
-          finalText.push(choice.message.content);
-        }
-      }
-
-      if (choice?.message?.tool_calls && choice.message.tool_calls.length > 0) {
-        for (const toolCall of choice.message.tool_calls) {
-          const toolName = toolCall.function.name;
-          const toolArgs = JSON.parse(toolCall.function.arguments);
-
-          let result;
-
-          // Check if this is a local tool
-          if (toolName === "performAnalysis") {
-            // Show waiting message for analysis
-            const chalk = (await import("chalk")).default;
-            console.log(
-              chalk.yellow(
-                "⏳ Fetching market data and generating analysis... Please wait."
-              )
-            );
-
-            result = await performAnalysis(toolArgs.token);
-            result = { content: result };
-          } else if (toolName === "getCurrentPrice") {
-            // Show waiting message for price fetch
-            const chalk = (await import("chalk")).default;
-            console.log(
-              chalk.yellow("📡 Fetching current price... Please wait.")
-            );
-
-            result = await getCurrentPrice(toolArgs.token);
-            result = { content: result };
-          } else if (toolName === "executeTrade") {
-            // Show waiting message for trade execution
-            const chalk = (await import("chalk")).default;
-            console.log(
-              chalk.yellow(
-                "🔍 Checking USDT balance and executing trade... Please wait."
-              )
-            );
-
-            result = await executeTrade(
-              this.mcp,
-              toolArgs.token,
-              toolArgs.amount
-            );
-            result = { content: result };
-          } else {
-            // Call server tool
-            result = await this.mcp.callTool({
-              name: toolName,
-              arguments: toolArgs,
-            });
-          }
-
-          finalText.push(
-            `[Calling tool ${toolName} with args ${JSON.stringify(toolArgs)}]`
-          );
-
-          this.conversationHistory.push({
-            role: "tool",
-            content: result.content as string,
-            tool_call_id: toolCall.id,
-          });
-        }
+      // 6️⃣ Execute trade if LLM says BUY or SELL
+      if (decision === "BUY" || decision === "SELL") {
+        console.log(chalk.green(`🚀 Executing ${decision} trade for ${token}...`));
+        const amount = this.determineTradeAmount(techAnalysis);
+        const result = await executeTrade(this.mcp, token, decision);
+        finalText.push(`Trade executed successfully: ${result}`);
       } else {
-        break;
+        console.log(chalk.cyan("🛑 No trade executed (HOLD)."));
+        finalText.push("No trade executed — signal suggests HOLD.");
       }
+
+    } catch (error) {
+      console.error(chalk.red("❌ Error during processQuery:"), error);
+      finalText.push(`Error: ${error.message}`);
     }
 
     return finalText.join("\n");
   }
+
 
   async chatLoop() {
     const rl = readline.createInterface({
