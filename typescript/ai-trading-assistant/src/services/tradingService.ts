@@ -3,10 +3,75 @@ import { executeUSDTToBNBSwap, executeBNBToUSDTSwap } from "./swapService";
 import { fetchCurrentPrice } from "./coinGeckoService";
 import "dotenv/config";
 
+import fs from "fs";
+import path from "path";
+import { promisify } from "util";
+
+const writeFileAsync = promisify(fs.writeFile);
+const appendFileAsync = promisify(fs.appendFile);
+const accessAsync = promisify(fs.access);
+
+// Get formatted start time (YYYY-MM-DD_HH-MM-SS)
+const startTime = new Date()
+  .toISOString()
+  .replace(/T/, "_")
+  .replace(/:/g, "-")
+  .replace(/\..+/, ""); // remove milliseconds
+
+// Append start time to the log file name
+const LOG_FILE = path.join(process.cwd(), `trade_log_${startTime}.csv`);
+
+interface TradeLogEntry {
+  timestamp: string;
+  token: string;
+  decision: string;
+  usdtAmount: number;
+  bnbAmount: number;
+  price: number;
+  txHash: string;
+  status: string;
+  message: string;
+}
+
 // USDT token address on BNB Chain
 const USDT_TOKEN_ADDRESS = "0x55d398326f99059fF775485246999027B3197955";
 const REQUIRED_USDT_AMOUNT = 1;
 const REQUIRED_BNB_AMOUNT = 0.001;
+
+/**
+ * Ensure CSV header exists.
+ */
+async function ensureCSVHeader(): Promise<void> {
+  try {
+    await accessAsync(LOG_FILE, fs.constants.F_OK);
+  } catch {
+    const header =
+      "timestamp,token,decision,usdtAmount,bnbAmount,price,txHash,status,message\n";
+    await writeFileAsync(LOG_FILE, header, "utf8");
+  }
+}
+
+/**
+ * Append a trade record to the CSV file.
+ */
+async function logTrade(entry: TradeLogEntry): Promise<void> {
+  await ensureCSVHeader();
+
+  const row =
+    [
+      entry.timestamp,
+      entry.token,
+      entry.decision,
+      entry.usdtAmount,
+      entry.bnbAmount,
+      entry.price,
+      entry.txHash,
+      entry.status,
+      `"${entry.message.replace(/\n/g, " ").replace(/"/g, "'")}"`,
+    ].join(",") + "\n";
+
+  await appendFileAsync(LOG_FILE, row, "utf8");
+}
 
 /**
  * Get user's wallet address using MCP get_address_from_private_key tool
@@ -122,53 +187,6 @@ export async function checkUSDTBalance(mcpClient: Client): Promise<number> {
  * @param mcpClient The MCP client instance
  * @returns Promise<number> BNB balance
  */
-// export async function checkBNBBalance(mcpClient: Client): Promise<number> {
-//   try {
-//     console.log("🔍 Checking BNB balance...");
-
-//     // First get the user's address
-//     const userAddress = await getUserAddress(mcpClient);
-
-//     const result = await mcpClient.callTool({
-//       name: "get_erc20_balance",
-//       arguments: {
-//         tokenAddress: "BNB",
-//         address: userAddress,
-//       },
-//     });
-
-//     if (!result.content) {
-//       throw new Error("No balance data received");
-//     }
-
-//     // Handle the response - MCP returns an array with text objects
-//     let balanceData;
-//     if (Array.isArray(result.content)) {
-//       // Extract the text from the first text object
-//       const textContent = result.content.find(
-//         (item) => item.type === "text"
-//       )?.text;
-//       if (!textContent) {
-//         throw new Error("No text content found in response");
-//       }
-//       balanceData = JSON.parse(textContent);
-//     } else if (typeof result.content === "string") {
-//       balanceData = JSON.parse(result.content);
-//     } else {
-//       balanceData = result.content;
-//     }
-
-//     const balance = parseFloat(
-//       balanceData.formatted || balanceData.balance || "0"
-//     );
-
-//     console.log(`✅ BNB Balance: ${balance}`);
-//     return balance;
-//   } catch (error) {
-//     console.error("Error checking BNB balance:", error);
-//     throw error;
-//   }
-// }
 export async function checkBNBBalance(mcpClient: Client): Promise<number> {
   try {
     console.log("🔍 Checking BNB balance...");
@@ -176,13 +194,6 @@ export async function checkBNBBalance(mcpClient: Client): Promise<number> {
     // First get the user's address
     const userAddress = await getUserAddress(mcpClient);
 
-    // const result = await mcpClient.callTool({
-    //   name: "get_erc20_balance",
-    //   arguments: {
-    //     tokenAddress: "BNB",
-    //     address: userAddress,
-    //   },
-    // });
     const result = await mcpClient.callTool({
       name: "get_native_balance",
       arguments: {
@@ -363,7 +374,19 @@ export async function executeTrade(
     const eligibility = await checkTradingEligibility(mcpClient);
 
     if (!eligibility.hasSufficientBalance) {
-      return eligibility.message;
+      const message = eligibility.message;
+      await logTrade({
+        timestamp: new Date().toISOString(),
+        token: tokenSymbol,
+        decision,
+        usdtAmount: 0,
+        bnbAmount: 0,
+        price: 0,
+        txHash: "N/A",
+        status: "FAILED",
+        message,
+      });
+      return message;
     }
 
     // If token is BNB, use 50/50 strategy
@@ -381,21 +404,28 @@ export async function executeTrade(
 
       // Get user's wallet address
       const userAddress = await getUserAddress(mcpClient);
-
+      const bnbPrice = await fetchCurrentPrice("BNB");
       try {
         if (usdtAmount > 0 && decision === "BUY") {
           // Swap USDT to BNB
           console.log("📊 Fetching current BNB price for swap calculation...");
-          const bnbPrice = await fetchCurrentPrice("BNB");
 
           // Execute the swap
           const receipt = await executeUSDTToBNBSwap(userAddress, usdtAmount, bnbPrice);
 
-          return `✅ Trade executed successfully! You swapped ${usdtAmount} USDT for BNB.\n📝 Transaction hash: ${
-            receipt.transactionHash
-          }\n💰 Your new USDT balance: ${(eligibility.usdtBalance - usdtAmount).toFixed(
-            2
-          )} USDT`;
+          const message = `✅ Trade executed successfully! You swapped ${usdtAmount} USDT for BNB.\n📝 Tx hash: ${receipt.transactionHash}`;
+          await logTrade({
+            timestamp: new Date().toISOString(),
+            token: tokenSymbol,
+            decision,
+            usdtAmount,
+            bnbAmount: 0,
+            price: bnbPrice,
+            txHash: receipt.transactionHash,
+            status: "SUCCESS",
+            message,
+          });
+          return message;
         } else if (bnbAmount > 0 && decision === "SELL") {
           // Swap BNB to USDT
           console.log("📊 Fetching current BNB price for swap calculation...");
@@ -404,22 +434,78 @@ export async function executeTrade(
           // Execute the swap
           const receipt = await executeBNBToUSDTSwap(userAddress, bnbAmount, bnbPrice);
 
-          return `✅ Trade executed successfully! You swapped ${bnbAmount} BNB for USDT.\n📝 Transaction hash: ${
-            receipt.transactionHash
-          }\n💰 Your new BNB balance: ${(eligibility.bnbBalance - bnbAmount).toFixed(
-            6
-          )} BNB`;
+          const message = `✅ Trade executed successfully! You swapped ${bnbAmount} BNB for USDT.\n📝 Tx hash: ${receipt.transactionHash}`;
+          await logTrade({
+            timestamp: new Date().toISOString(),
+            token: tokenSymbol,
+            decision,
+            usdtAmount: 0,
+            bnbAmount,
+            price: bnbPrice,
+            txHash: receipt.transactionHash,
+            status: "SUCCESS",
+            message,
+          });
+          return message;
         } else {
-          return "No trade needed - balances are already optimal.";
+          const message = "No trade needed - balances are already optimal.";
+          await logTrade({
+            timestamp: new Date().toISOString(),
+            token: tokenSymbol,
+            decision,
+            usdtAmount,
+            bnbAmount,
+            price: bnbPrice,
+            txHash: "N/A",
+            status: "SKIPPED",
+            message,
+          });
+          return message;
         }
       } catch (swapError) {
-        return `❌ Swap failed: ${swapError}. Please try again or check your network connection.`;
+        const message = `❌ Swap failed: ${String(swapError)}`;
+        await logTrade({
+          timestamp: new Date().toISOString(),
+          token: tokenSymbol,
+          decision,
+          usdtAmount,
+          bnbAmount,
+          price: bnbPrice,
+          txHash: "ERROR",
+          status: "FAILED",
+          message,
+        });
+        return message;
       }
     } else {
-      return `❌ Trade failed: Unsupported token ${tokenSymbol}. Only BNB trades are supported with 50/50 allocation strategy.`;
+      const message = `❌ Trade failed: Unsupported token ${tokenSymbol}. Only BNB trades are supported with 50/50 allocation strategy.`;
+      await logTrade({
+        timestamp: new Date().toISOString(),
+        token: tokenSymbol,
+        decision,
+        usdtAmount: 0,
+        bnbAmount: 0,
+        price: 0,
+        txHash: "N/A",
+        status: "FAILED",
+        message,
+      });
+      return message;
     }
   } catch (error) {
-    return `❌ Trade failed: ${error}`;
+    const message = `❌ Trade failed: ${String(error)}`;
+    await logTrade({
+      timestamp: new Date().toISOString(),
+      token: tokenSymbol,
+      decision,
+      usdtAmount: 0,
+      bnbAmount: 0,
+      price: 0,
+      txHash: "N/A",
+      status: "FAILED",
+      message,
+    });
+    return message;
   }
 }
 

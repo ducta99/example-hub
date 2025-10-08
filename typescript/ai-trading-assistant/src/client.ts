@@ -23,7 +23,8 @@ if (!OPENAI_API_KEY) {
   throw new Error("OPENAI_API_KEY is not set");
 }
 const PRIVATE_KEY = process.env.PRIVATE_KEY || "";
-const model = "gpt-4o-mini";
+// const model = "gpt-4o-mini";
+const MODEL = "hf.co/Mungert/Fin-R1-GGUF:latest";
 
 export class MCPClient {
   private mcp: Client;
@@ -138,106 +139,6 @@ export class MCPClient {
     }
   }
 
-  // async processQuery(query: string) {
-  //   // Add the new user message to conversation history
-  //   this.conversationHistory.push({
-  //     role: "user",
-  //     content: query,
-  //   });
-
-  //   let finalText: string[] = [];
-  //   let maxIterations = 5;
-  //   let iteration = 0;
-
-  //   while (iteration < maxIterations) {
-  //     iteration++;
-
-  //     const response = await this.openai.chat.completions.create({
-  //       model,
-  //       max_tokens: 1000,
-  //       messages: this.conversationHistory,
-  //       tools: this.tools,
-  //     });
-
-  //     const choice = response.choices[0];
-
-  //     if (choice?.message) {
-  //       this.conversationHistory.push(choice.message);
-
-  //       if (choice.message.content) {
-  //         finalText.push(choice.message.content);
-  //       }
-  //     }
-
-  //     if (choice?.message?.tool_calls && choice.message.tool_calls.length > 0) {
-  //       for (const toolCall of choice.message.tool_calls) {
-  //         const toolName = toolCall.function.name;
-  //         const toolArgs = JSON.parse(toolCall.function.arguments);
-
-  //         let result;
-
-  //         // Check if this is a local tool
-  //         if (toolName === "performAnalysis") {
-  //           // Show waiting message for analysis
-  //           const chalk = (await import("chalk")).default;
-  //           console.log(
-  //             chalk.yellow(
-  //               "⏳ Fetching market data and generating analysis... Please wait."
-  //             )
-  //           );
-
-  //           result = await performAnalysis(toolArgs.token);
-  //           result = { content: result };
-  //         } else if (toolName === "getCurrentPrice") {
-  //           // Show waiting message for price fetch
-  //           const chalk = (await import("chalk")).default;
-  //           console.log(
-  //             chalk.yellow("📡 Fetching current price... Please wait.")
-  //           );
-
-  //           result = await getCurrentPrice(toolArgs.token);
-  //           result = { content: result };
-  //         } else if (toolName === "executeTrade") {
-  //           // Show waiting message for trade execution
-  //           const chalk = (await import("chalk")).default;
-  //           console.log(
-  //             chalk.yellow(
-  //               "🔍 Checking USDT balance and executing trade... Please wait."
-  //             )
-  //           );
-
-  //           result = await executeTrade(
-  //             this.mcp,
-  //             toolArgs.token,
-  //             toolArgs.amount
-  //           );
-  //           result = { content: result };
-  //         } else {
-  //           // Call server tool
-  //           result = await this.mcp.callTool({
-  //             name: toolName,
-  //             arguments: toolArgs,
-  //           });
-  //         }
-
-  //         finalText.push(
-  //           `[Calling tool ${toolName} with args ${JSON.stringify(toolArgs)}]`
-  //         );
-
-  //         this.conversationHistory.push({
-  //           role: "tool",
-  //           content: result.content as string,
-  //           tool_call_id: toolCall.id,
-  //         });
-  //       }
-  //     } else {
-  //       break;
-  //     }
-  //   }
-
-  //   return finalText.join("\n");
-  // }
-
   private extractTokenFromQuery(query: string): string {
     const match = query.match(/\b[A-Z]{2,5}\b/);
     if (!match) throw new Error("Token not found in query.");
@@ -262,12 +163,12 @@ export class MCPClient {
     return 25; // default small trade
   }
 
-  async processQuery(query: string) {
+  async processQuery(query: string): Promise<string> {
     const chalk = (await import("chalk")).default;
     const finalText: string[] = [];
 
     try {
-      // 1️⃣ Extract token from query
+      // 1️⃣ Extract token
       const token = this.extractTokenFromQuery(query);
       finalText.push(`Detected token: ${token}`);
 
@@ -276,58 +177,68 @@ export class MCPClient {
       const price = await getCurrentPrice(token);
       finalText.push(`Current price of ${token}: ${price}`);
 
-      // 3️⃣ Perform technical analysis (RSI, MACD, etc.)
+      // 3️⃣ Perform technical analysis
       console.log(chalk.yellow("📊 Performing technical analysis..."));
       const techAnalysis = await performAnalysis(token);
       finalText.push(`Technical indicators:\n${JSON.stringify(techAnalysis, null, 2)}`);
 
-      // 4️⃣ Ask LLM to interpret signals and add sentiment reasoning
-      console.log(chalk.blue("🧠 Evaluating technical + sentiment data via LLM..."));
+      // 4️⃣ Get sentiment summary
+      console.log(chalk.blue("🧠 Evaluating technical + sentiment data via Ollama model..."));
+      const sentiment = await this.getSentimentSummary(token);
 
-      const llmEval = await this.openai.chat.completions.create({
-        model,
-        max_tokens: 800,
-        messages: [
-          {
-            role: "system",
-            content: `You are a professional crypto trading assistant.
-  You will combine technical indicators and market sentiment to decide whether to BUY, SELL, or HOLD.
-  Explain your reasoning briefly and output the final decision in the format:
-  Decision: [BUY/SELL/HOLD].`,
-          },
-          {
-            role: "user",
-            content: `
-  Token: ${token}
-  Current Price: ${price}
-  Technical Signals: ${JSON.stringify(techAnalysis, null, 2)}
-  Market Sentiment (from news/social): ${await this.getSentimentSummary(token)}
+      // Prompts
+      const systemPrompt = `You are a professional crypto trading assistant.
+You will combine technical indicators and market sentiment to decide whether to BUY, SELL, or HOLD.
+Explain your reasoning briefly and output the final decision in the format:
+Decision: [BUY/SELL/HOLD].`;
 
-  Decide what action to take.
-            `,
+      const userPrompt = `
+Token: ${token}
+Current Price: ${price}
+Technical Signals: ${JSON.stringify(techAnalysis, null, 2)}
+Market Sentiment (from news/social): ${sentiment}
+
+Decide what action to take.
+      `;
+
+      // 5️⃣ Use Ollama API
+      const response = await fetch("http://localhost:11434/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: MODEL,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+          stream: false,
+          options: {
+            num_predict: 800, // same as OpenAI's max_tokens
+            temperature: 0.5,
           },
-        ],
+        }),
       });
 
-      const llmContent = llmEval.choices[0].message.content || "";
+      if (!response.ok) throw new Error(`Ollama request failed (${response.status})`);
+      const data = await response.json();
+
+      const llmContent =
+        data.message?.content ||
+        data.messages?.map((m: { content: string }) => m.content).join("\n") ||
+        "";
+
       finalText.push(`LLM Evaluation:\n${llmContent}`);
 
-      // 5️⃣ Extract the LLM’s decision
+      // 6️⃣ Extract decision
       const decision = this.extractDecision(llmContent);
       finalText.push(`Final Decision: ${decision}`);
 
-      // 6️⃣ Execute trade if LLM says BUY or SELL
-      if (decision === "BUY" || decision === "SELL") {
-        console.log(chalk.green(`🚀 Executing ${decision} trade for ${token}...`));
-        const amount = this.determineTradeAmount(techAnalysis);
-        const result = await executeTrade(this.mcp, token, decision);
-        finalText.push(`Trade executed successfully: ${result}`);
-      } else {
-        console.log(chalk.cyan("🛑 No trade executed (HOLD)."));
-        finalText.push("No trade executed — signal suggests HOLD.");
-      }
-
-    } catch (error) {
+      // 7️⃣ Execute trade
+      console.log(chalk.green(`🚀 Executing ${decision} trade for ${token}...`));
+      const amount = this.determineTradeAmount(techAnalysis);
+      const result = await executeTrade(this.mcp, token, decision);
+      finalText.push(`Trade executed successfully: ${result}`);
+    } catch (error: any) {
       console.error(chalk.red("❌ Error during processQuery:"), error);
       finalText.push(`Error: ${error.message}`);
     }
@@ -352,13 +263,30 @@ export class MCPClient {
       );
 
       while (true) {
-        const message = await rl.question(chalk.green("\nUser: "));
-        const lower = message.toLowerCase();
+        // Create a 1-hour timer (you can reduce this to eg. 10 seconds for testing)
+        const oneHour = new Promise<string>(resolve =>
+          setTimeout(() => resolve("AUTO_TRIGGER"), 3600_000)
+        );
+
+        // Wait for user input
+        const userInput = rl.question(chalk.green("\nUser: "));
+
+        // Whichever happens first (input or timer)
+        const result = await Promise.race([userInput, oneHour]);
+        const lower = result.toLowerCase?.() ?? "";
+
+        // Handle quit command
         if (lower === "quit" || lower === "exit") {
+          console.log(chalk.red("Exiting..."));
           break;
         }
-        const response = await this.processQuery(message);
-        console.log(chalk.blue("\nAssistant:"));
+
+        // Determine trigger source
+        const triggerType = result === "AUTO_TRIGGER" ? "auto" : "manual";
+        console.log(chalk.blue(`\nAssistant (${triggerType}):`));
+
+        // Run trade logic
+        const response = await this.processQuery(triggerType === "auto" ? "BNB" : result);
         console.log(chalk.yellow(response));
       }
     } finally {
